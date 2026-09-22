@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_tts/flutter_tts.dart';
+import 'speech_engine.dart';
 
 class TtsVoice {
   final String name;
@@ -11,7 +12,7 @@ class TtsVoice {
   String toString() => '$name ($locale)';
 }
 
-class TtsService {
+class TtsService implements SpeechEngine {
   final FlutterTts _tts = FlutterTts();
 
   VoidCallback? onComplete;
@@ -20,6 +21,7 @@ class TtsService {
 
   bool _initialised = false;
 
+  @override
   Future<void> init() async {
     if (_initialised) return;
     _initialised = true;
@@ -32,7 +34,6 @@ class TtsService {
       await _tts.setQueueMode(0); // QUEUE_FLUSH
     }
 
-    _tts.setCompletionHandler(() => onComplete?.call());
     _tts.setCancelHandler(() {});
     _tts.setErrorHandler((m) => onError?.call(m.toString()));
     _tts.setProgressHandler((text, start, end, word) {
@@ -52,6 +53,7 @@ class TtsService {
       ..sort((a, b) => a.locale.compareTo(b.locale));
   }
 
+  @override
   Future<void> applyVoice(String? name, String? locale) async {
     if (name == null || locale == null) return;
     try {
@@ -59,15 +61,21 @@ class TtsService {
     } catch (_) {/* voice uninstalled */}
   }
 
+  @override
   Future<void> setRate(double v) => _tts.setSpeechRate(v);
+  @override
   Future<void> setPitch(double v) => _tts.setPitch(v);
+  @override
   Future<void> setVolume(double v) => _tts.setVolume(v);
 
+  @override
   Future<void> speak(String text) => _tts.speak(text);
+  @override
   Future<void> stop() => _tts.stop();
 
   /// Android pause works on API 26+. Returns false if unsupported,
   /// letting the controller fall back to stop+replay-from-chunk-start.
+  @override
   Future<bool> pause() async {
     try {
       final r = await _tts.pause();
@@ -78,7 +86,6 @@ class TtsService {
   }
 
   Future<void> dispose() async {
-    onComplete = null;
     onError = null;
     onProgress = null;
     // flutter_tts can't remove handlers, so replace them with no-ops
@@ -87,7 +94,9 @@ class TtsService {
     _tts.setCancelHandler(() {});
     _tts.setErrorHandler((_) {});
     _tts.setProgressHandler((a, b, c, d) {});
-    try { await _tts.stop(); } catch (_) {}
+    try {
+      await _tts.stop();
+    } catch (_) {}
   }
 }
 
