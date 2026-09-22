@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../state/reader_controller.dart';
+import '../models/article.dart';
 
 class ReaderScreen extends StatefulWidget {
   const ReaderScreen({super.key});
@@ -25,14 +26,27 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
   }
 
+  Article? _lastArticle; // import '../models/article.dart'
+
   @override
   Widget build(BuildContext context) {
     final r = context.watch<ReaderController>();
     final cs = Theme.of(context).colorScheme;
     final a = r.article;
 
-    WidgetsBinding.instance
-        .addPostFrameCallback((_) => _autoScroll(r.index));
+    if (!identical(r.article, _lastArticle)) {
+      // new page => drop old keys
+      _keys.clear();
+      _lastArticle = r.article;
+      _lastIndex = -1;
+    }
+
+    if (r.index != _lastIndex) {
+      // schedule only on change
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _autoScroll(r.index);
+      });
+    }
 
     return Scaffold(
       appBar: AppBar(
@@ -58,7 +72,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(a.title,
-                            style: Theme.of(ctx).textTheme.headlineSmall
+                            style: Theme.of(ctx)
+                                .textTheme
+                                .headlineSmall
                                 ?.copyWith(fontWeight: FontWeight.bold)),
                         if ((a.byline ?? '').isNotEmpty)
                           Padding(
@@ -80,8 +96,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 200),
                     margin: const EdgeInsets.symmetric(vertical: 2),
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 4),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                     decoration: BoxDecoration(
                       color: active
                           ? cs.primaryContainer.withOpacity(.75)

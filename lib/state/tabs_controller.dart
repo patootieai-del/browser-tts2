@@ -77,7 +77,8 @@ class TabsController extends ChangeNotifier with WidgetsBindingObserver {
         _kSession,
         jsonEncode({
           'active': active.id,
-          'tabs': _tabs.where((t) => !t.incognito).map((t) => t.toJson()).toList(),
+          'tabs':
+              _tabs.where((t) => !t.incognito).map((t) => t.toJson()).toList(),
         }),
       );
     } catch (_) {}
@@ -96,9 +97,7 @@ class TabsController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void _enforceLiveLimit() {
-    final others = _tabs
-        .where((t) => t.live && !identical(t, active))
-        .toList()
+    final others = _tabs.where((t) => t.live && !identical(t, active)).toList()
       ..sort((a, b) => b.lastActive.compareTo(a.lastActive));
     for (final t in others.skip(AppConfig.maxLiveTabs - 1)) {
       unawaited(_discard(t));
@@ -143,7 +142,10 @@ class TabsController extends ChangeNotifier with WidgetsBindingObserver {
       _removeAndRetire([victim]);
     }
     final t = BrowserTab(
-        url: url, incognito: incognito, desktop: desktop, title: title ?? 'New tab');
+        url: url,
+        incognito: incognito,
+        desktop: desktop,
+        title: title ?? 'New tab');
     _tabs.insert((_active + 1).clamp(0, _tabs.length), t);
     _activate(_tabs.indexOf(t));
     return t;
@@ -276,7 +278,7 @@ class TabsController extends ChangeNotifier with WidgetsBindingObserver {
           settings: PrintJobSettings(jobName: t.title));
     } catch (_) {
     } finally {
-      await job?.dispose(); // PrintJobController owns a method channel
+      job?.dispose(); // PrintJobController owns a method channel
     }
   }
 
