@@ -2,16 +2,26 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vox_browser/widgets/url_bar.dart';
+import 'package:vox_browser/core/utils/url_suggestions.dart';
 
 const _url = 'https://example.com/some/long/path?q=1';
 
-Widget _host({String url = _url, ValueChanged<String>? onSubmit}) =>
+Widget _host({
+  String url = _url,
+  ValueChanged<String>? onSubmit,
+  Future<List<UrlSuggestion>> Function(String)? suggest,
+}) =>
     MaterialApp(
       home: Scaffold(
-        body: Center(
+        body: Align(
+          alignment: Alignment.topCenter,
           child: SizedBox(
             width: 320,
-            child: UrlBar(url: url, incognito: false, onSubmit: onSubmit ?? (_) {}),
+            child: UrlBar(
+                url: url,
+                incognito: false,
+                onSubmit: onSubmit ?? (_) {},
+                suggest: suggest),
           ),
         ),
       ),
@@ -21,6 +31,56 @@ TextEditingController _controller(WidgetTester t) =>
     t.widget<EditableText>(find.byType(EditableText)).controller;
 
 void main() {
+  final _all = [
+    const UrlSuggestion(
+        url: 'https://flutter.dev/docs', title: 'Flutter docs', visits: 3),
+    const UrlSuggestion(url: 'https://example.com', title: 'Example site'),
+  ];
+  Future<List<UrlSuggestion>> _suggest(String q) async =>
+      _all.where((s) => s.url.contains(q)).toList();
+// inside main():
+  testWidgets('typing shows suggestions; tapping one opens its URL',
+      (tester) async {
+    String? got;
+    await tester.pumpWidget(_host(suggest: _suggest, onSubmit: (v) => got = v));
+    await tester.enterText(find.byType(TextField), 'flut');
+    await tester.pumpAndSettle();
+    expect(find.text('Flutter docs'), findsOneWidget);
+    expect(find.text('Example site'), findsNothing);
+    await tester.tap(find.text('Flutter docs'));
+    await tester.pumpAndSettle();
+    expect(got, 'https://flutter.dev/docs');
+  });
+  testWidgets('no suggestions for the untouched (select-all) current URL',
+      (tester) async {
+    await tester
+        .pumpWidget(_host(url: 'https://example.com', suggest: _suggest));
+    await tester.tap(find.byType(TextField));
+    await tester.pumpAndSettle();
+    expect(find.byType(ListTile), findsNothing);
+  });
+  testWidgets('Enter submits what was typed, not the top suggestion',
+      (tester) async {
+    String? got;
+    await tester.pumpWidget(_host(suggest: _suggest, onSubmit: (v) => got = v));
+    await tester.enterText(find.byType(TextField), 'flut');
+    await tester.pumpAndSettle();
+    await tester.testTextInput.receiveAction(TextInputAction.go);
+    await tester.pumpAndSettle();
+    expect(got, 'flut');
+  });
+  testWidgets('the arrow button copies a suggestion into the field for editing',
+      (tester) async {
+    String? got;
+    await tester.pumpWidget(_host(suggest: _suggest, onSubmit: (v) => got = v));
+    await tester.enterText(find.byType(TextField), 'flut');
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.north_west).first);
+    await tester.pumpAndSettle();
+    expect(_controller(tester).text, 'https://flutter.dev/docs');
+    expect(got, isNull); // not navigated
+  });
+
   testWidgets('tapping the URL bar selects the whole URL', (tester) async {
     await tester.pumpWidget(_host());
     await tester.tap(find.byType(TextField));

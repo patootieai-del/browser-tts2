@@ -4,6 +4,7 @@ class Article {
   final String text;
   final String? byline;
   final String? excerpt;
+  final int domLength;
 
   const Article({
     required this.title,
@@ -11,6 +12,7 @@ class Article {
     required this.text,
     this.byline,
     this.excerpt,
+    this.domLength = 0, // document.body.textContent.length at extraction time
   });
 
   bool get isEmpty => text.trim().isEmpty;
@@ -21,5 +23,6 @@ class Article {
         text: (j['textContent'] ?? '').toString(),
         byline: j['byline']?.toString(),
         excerpt: j['excerpt']?.toString(),
+        domLength: (j['domLength'] as num?)?.toInt() ?? 0,
       );
 }

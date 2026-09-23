@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import '../models/bookmark.dart';
 import '../models/history_entry.dart';
 import '../services/database_service.dart';
+import '../core/utils/url_suggestions.dart';
 
 class LibraryController extends ChangeNotifier {
   final _db = DatabaseService.instance;
@@ -56,5 +57,13 @@ class LibraryController extends ChangeNotifier {
     }
     await refreshBookmarks();
     return !exists;
+  }
+
+  Future<List<UrlSuggestion>> suggest(String query) async {
+    try {
+      return UrlRanker.rank(await _db.suggestionCandidates(query), query);
+    } catch (_) {
+      return const [];
+    }
   }
 }

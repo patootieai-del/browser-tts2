@@ -1,0 +1,143 @@
+import 'dart:async';
+
+import 'package:vox_browser/core/utils/text_chunker.dart';
+import 'package:vox_browser/core/utils/text_map.dart';
+import 'package:vox_browser/models/article.dart';
+import 'package:vox_browser/services/extraction_service.dart';
+import 'package:vox_browser/services/speech_engine.dart';
+import 'package:vox_browser/state/reader_controller.dart';
+
+class FakeSpeech implements SpeechEngine {
+  @override
+  void Function(String message)? onError;
+  final spoken = <String>[];
+  final _completers = <Completer<void>>[];
+  bool completeOnStop = true;
+
+  @override
+  Future<void> init() async {}
+  @override
+  Future<void> speak(String text) {
+    spoken.add(text);
+    final c = Completer<void>();
+    _completers.add(c);
+    return c.future;
+  }
+
+  void complete(int n) {
+    if (!_completers[n].isCompleted) _completers[n].complete();
+  }
+
+  @override
+  Future<void> stop() async {
+    if (!completeOnStop) return;
+    for (final c in _completers) {
+      if (!c.isCompleted) c.complete();
+    }
+  }
+
+  @override
+  Future<bool> pause() async => false;
+  @override
+  Future<void> setRate(double v) async {}
+  @override
+  Future<void> setPitch(double v) async {}
+  @override
+  Future<void> setVolume(double v) async {}
+  @override
+  Future<void> applyVoice(String? n, String? l) async {}
+}
+
+class FakePage implements PageContentSource {
+  FakePage(this.article, this.nodes, {this.snapshotGate});
+  Article? article; // null => "nothing rendered yet"
+  List<String> nodes;
+  final Completer<void>? snapshotGate;
+
+  final applied = <HighlightRange>[];
+  var snapshots = 0;
+  var extracts = 0;
+
+  @override
+  Future<Article?> extract({bool settle = false}) async {
+    extracts++;
+    return article;
+  }
+
+  @override
+  Future<List<String>> snapshotTextNodes() async {
+    snapshots++;
+    await snapshotGate?.future;
+    return nodes;
+  }
+
+  @override
+  Future<bool> highlight(HighlightRange r) async {
+    applied.add(r);
+    return true;
+  }
+
+  @override
+  Future<void> clearHighlight({bool release = false}) async {}
+}
+
+const fixtureTitle = 'Fruit report: a title that is comfortably long enough';
+const fixtureSentences = [
+  'The first sentence talks about apples and is long enough.',
+  'The second sentence talks about bananas and is also long.',
+  'The third sentence talks about cherries and keeps going.',
+  'The fourth sentence talks about dates and finally ends.',
+];
+const extraSentence = 'A fifth sentence was appended later about elderberries.';
+
+Article makeArticle(List<String> sentences,
+        {int domLength = 5000, String title = fixtureTitle}) =>
+    Article(
+        title: title,
+        url: 'https://x.test',
+        text: sentences.join(' '),
+        domLength: domLength);
+
+final fixtureArticle = makeArticle(fixtureSentences);
+
+List<String> chunksOf(Article a) =>
+    TextChunker.chunk('${a.title}. \n\n${a.text}');
+List<String> fixtureChunks() => chunksOf(fixtureArticle);
+
+/// Nav blob + one messy node per chunk => chunk i lives in node i + 1.
+List<String> nodesFor(List<String> chunks, {int? replaceChunk}) => [
+      'Home Menu Login',
+      for (var i = 0; i < chunks.length; i++)
+        i == replaceChunk
+            ? 'totally unrelated advertisement'
+            : '  ${chunks[i]}\n',
+    ];
+List<String> fixtureNodes({int? replaceChunk}) =>
+    nodesFor(fixtureChunks(), replaceChunk: replaceChunk);
+
+class ReaderRig {
+  ReaderRig(this.r, this.tts, this.page);
+  final ReaderController r;
+  final FakeSpeech tts;
+  final FakePage page;
+}
+
+Future<ReaderRig> setupReader({
+  List<String>? nodes,
+  Completer<void>? gate,
+  bool emptyPage = false,
+}) async {
+  final tts = FakeSpeech();
+  final page = FakePage(
+      emptyPage ? null : fixtureArticle, nodes ?? fixtureNodes(),
+      snapshotGate: gate);
+  final r = ReaderController(
+    tts: tts,
+    extractor: ExtractionService(),
+    autoRefreshDelay: Duration.zero,
+    autoRefreshMinGap: Duration.zero,
+  );
+  r.bindSource(page);
+  await r.loadPage(url: 'https://x.test');
+  return ReaderRig(r, tts, page);
+}

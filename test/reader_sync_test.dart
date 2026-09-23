@@ -7,82 +7,7 @@ import 'package:vox_browser/models/article.dart';
 import 'package:vox_browser/services/extraction_service.dart';
 import 'package:vox_browser/services/speech_engine.dart';
 import 'package:vox_browser/state/reader_controller.dart';
-
-/// Fake TTS engine. Like Android engines, it completes the `speak` future of
-/// a cancelled utterance when stop() is called, and the test can also
-/// deliver such a completion *late* via [complete].
-class FakeSpeech implements SpeechEngine {
-  @override
-  void Function(String message)? onError;
-
-  final spoken = <String>[];
-  final _completers = <Completer<void>>[];
-  bool completeOnStop = true;
-
-  @override
-  Future<void> init() async {}
-
-  @override
-  Future<void> speak(String text) {
-    spoken.add(text);
-    final c = Completer<void>();
-    _completers.add(c);
-    return c.future;
-  }
-
-  /// Finish (or deliver a late completion for) the n-th utterance.
-  void complete(int n) {
-    if (!_completers[n].isCompleted) _completers[n].complete();
-  }
-
-  @override
-  Future<void> stop() async {
-    if (!completeOnStop) return;
-    for (final c in _completers) {
-      if (!c.isCompleted) c.complete();
-    }
-  }
-
-  @override
-  Future<bool> pause() async => false; // forces the stop+re-speak path
-  @override
-  Future<void> setRate(double v) async {}
-  @override
-  Future<void> setPitch(double v) async {}
-  @override
-  Future<void> setVolume(double v) async {}
-  @override
-  Future<void> applyVoice(String? n, String? l) async {}
-}
-
-class FakePage implements PageContentSource {
-  FakePage(this.article, this.nodes, {this.snapshotGate});
-  final Article article;
-  final List<String> nodes;
-  final Completer<void>? snapshotGate;
-
-  final applied = <HighlightRange>[];
-  var snapshots = 0;
-
-  @override
-  Future<Article?> extract() async => article;
-
-  @override
-  Future<List<String>> snapshotTextNodes() async {
-    snapshots++;
-    await snapshotGate?.future;
-    return nodes;
-  }
-
-  @override
-  Future<bool> highlight(HighlightRange r) async {
-    applied.add(r);
-    return true;
-  }
-
-  @override
-  Future<void> clearHighlight({bool release = false}) async {}
-}
+import 'helpers/reader_fakes.dart';
 
 const _title = 'Fruit report: a title that is comfortably long enough';
 const _sentences = [
@@ -92,15 +17,15 @@ const _sentences = [
   'The fourth sentence talks about dates and finally ends.',
 ];
 
-final _article = Article(
+final fixtureArticle = Article(
     title: _title, url: 'https://x.test', text: _sentences.join(' '));
 
-List<String> _chunks() => TextChunker.chunk('$_title. \n\n${_sentences.join(' ')}');
+List<String> fixtureChunks() => TextChunker.chunk('$_title. \n\n${_sentences.join(' ')}');
 
 /// Page text: a nav blob, then one node per chunk with messy whitespace.
 /// => chunk i lives in node i + 1.
-List<String> _nodes({int? replaceChunk}) {
-  final c = _chunks();
+List<String> fixtureNodes({int? replaceChunk}) {
+  final c = fixtureChunks();
   return [
     'Home Menu Login',
     for (var i = 0; i < c.length; i++)
@@ -108,12 +33,12 @@ List<String> _nodes({int? replaceChunk}) {
   ];
 }
 
-Future<({ReaderController r, FakeSpeech tts, FakePage page})> _setup({
+Future<({ReaderController r, FakeSpeech tts, FakePage page})> setupReader({
   List<String>? nodes,
   Completer<void>? gate,
 }) async {
   final tts = FakeSpeech();
-  final page = FakePage(_article, nodes ?? _nodes(), snapshotGate: gate);
+  final page = FakePage(fixtureArticle, nodes ?? fixtureNodes(), snapshotGate: gate);
   final r = ReaderController(tts: tts, extractor: ExtractionService());
   r.bindSource(page);
   await r.loadPage();
@@ -122,11 +47,11 @@ Future<({ReaderController r, FakeSpeech tts, FakePage page})> _setup({
 
 void main() {
   test('precondition: the fixture produces 5 distinct chunks', () {
-    expect(_chunks().length, 5);
+    expect(fixtureChunks().length, 5);
   });
 
   test('spoken chunk, highlighted chunk and index always agree', () async {
-    final s = await _setup();
+    final s = await setupReader();
     final chunks = s.r.chunks;
 
     await s.r.play();
@@ -146,7 +71,7 @@ void main() {
 
   test('REGRESSION: late completion of a cancelled utterance must not advance',
       () async {
-    final s = await _setup();
+    final s = await setupReader();
     final chunks = s.r.chunks;
 
     await s.r.play();
@@ -164,7 +89,7 @@ void main() {
 
   test('stale completions are ignored even if the engine completes on stop()',
       () async {
-    final s = await _setup();
+    final s = await setupReader();
     s.tts.completeOnStop = true;
     await s.r.play();
     await pumpEventQueue();
@@ -181,7 +106,7 @@ void main() {
 
   test('rapid skipping applies only the latest highlight', () async {
     final gate = Completer<void>();
-    final s = await _setup(gate: gate);
+    final s = await setupReader(gate: gate);
 
     await s.r.play();
     await pumpEventQueue(); // highlight(0) is waiting for the page snapshot
@@ -201,7 +126,7 @@ void main() {
   });
 
   test('pause then play re-speaks the same chunk without skipping', () async {
-    final s = await _setup();
+    final s = await setupReader();
     await s.r.play();
     await pumpEventQueue();
 
@@ -220,7 +145,7 @@ void main() {
 
   test('no confident match => no highlight is applied (never a wrong one)',
       () async {
-    final s = await _setup(nodes: _nodes(replaceChunk: 2));
+    final s = await setupReader(nodes: fixtureNodes(replaceChunk: 2));
 
     await s.r.play();
     await pumpEventQueue();
@@ -236,7 +161,7 @@ void main() {
   });
 
   test('going back re-highlights the earlier chunk correctly', () async {
-    final s = await _setup();
+    final s = await setupReader();
     await s.r.play();
     await pumpEventQueue();
     await s.r.seekTo(3);
@@ -251,13 +176,13 @@ void main() {
 
   test('a stale page extraction does not replace the current page', () async {
     final tts = FakeSpeech();
-    final slow = _SlowPage(_article, _nodes());
+    final slow = _SlowPage(fixtureArticle, fixtureNodes());
     final r = ReaderController(tts: tts, extractor: ExtractionService());
     r.bindSource(slow);
     final pending = r.loadPage();
     await pumpEventQueue();
 
-    r.bindSource(FakePage(_article, _nodes())); // user switched tab
+    r.bindSource(FakePage(fixtureArticle, fixtureNodes())); // user switched tab
     slow.release();
     await pending;
 
@@ -270,7 +195,7 @@ class _SlowPage extends FakePage {
   final _gate = Completer<void>();
   void release() => _gate.complete();
   @override
-  Future<Article?> extract() async {
+  Future<Article?> extract({bool settle = false}) async {
     await _gate.future;
     return article;
   }

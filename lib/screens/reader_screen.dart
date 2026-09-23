@@ -53,6 +53,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
         title: const Text('Reader'),
         actions: [
           IconButton(
+            tooltip: 'Re-read page content',
+            icon: const Icon(Icons.sync),
+            onPressed: () => r.refresh(),
+          ),
+          IconButton(
             icon: Icon(r.isPlaying ? Icons.pause : Icons.play_arrow),
             onPressed: r.togglePlayPause,
           ),

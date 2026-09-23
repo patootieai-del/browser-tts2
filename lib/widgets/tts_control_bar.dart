@@ -31,6 +31,23 @@ class TtsControlBar extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (r.isStale)
+              InkWell(
+                onTap: () => r.refresh(),
+                child: Container(
+                  width: double.infinity,
+                  color: cs.tertiaryContainer,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  child: Row(children: [
+                    Icon(Icons.sync, size: 16, color: cs.onTertiaryContainer),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text('Page content changed. Tap to refresh reading.',
+                          style: TextStyle(fontSize: 12, color: cs.onTertiaryContainer)),
+                    ),
+                  ]),
+                ),
+              ),
             if (r.hasContent)
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -60,7 +77,7 @@ class TtsControlBar extends StatelessWidget {
                   onPressed: canGoBack ? onWebBack : null,
                 ),
                 IconButton(
-                  tooltip: 'Restart from top',
+                  tooltip: 'Restart (re-reads the page)',
                   icon: const Icon(Icons.replay),
                   onPressed: r.hasContent ? r.restart : null,
                 ),

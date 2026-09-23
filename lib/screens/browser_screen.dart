@@ -72,6 +72,7 @@ class BrowserScreen extends StatelessWidget {
             key: ValueKey('url-${tab.id}'),
             url: tab.url,
             incognito: tab.incognito,
+            suggest: library.suggest,
             onSubmit: (v) => tabs
                 .load(UrlResolver.resolve(v, engine, AppConfig.homeUrl)),
           ),
@@ -148,6 +149,8 @@ class BrowserScreen extends StatelessWidget {
                     value: 'home', child: _Item(Icons.home, 'Home')),
                 const PopupMenuItem(
                     value: 'reload', child: _Item(Icons.refresh, 'Reload')),
+                const PopupMenuItem(
+                    value: 'reread', child: _Item(Icons.sync, 'Re-read page content')),
                 const PopupMenuItem(
                     value: 'close_others',
                     child: _Item(Icons.tab_unselected, 'Close other tabs')),

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -6,6 +7,7 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../models/browser_tab.dart';
+import '../services/page_scripts.dart';
 import '../state/library_controller.dart';
 import '../state/reader_controller.dart';
 import '../state/settings_controller.dart';
@@ -17,7 +19,6 @@ class TabWebView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Capture objects (not BuildContext) so callbacks are safe after unmount.
     final tabs = context.read<TabsController>();
     final reader = context.read<ReaderController>();
     final library = context.read<LibraryController>();
@@ -26,13 +27,40 @@ class TabWebView extends StatelessWidget {
     return InAppWebView(
       initialUrlRequest: URLRequest(url: WebUri(tab.url)),
       initialSettings: tab.buildSettings(),
+      initialUserScripts: UnmodifiableListView<UserScript>([
+        UserScript(
+          source: PageScripts.contentWatcher,
+          injectionTime: UserScriptInjectionTime.AT_DOCUMENT_END,
+          forMainFrameOnly: true,
+        ),
+      ]),
       pullToRefreshController: tab.pull,
       findInteractionController: tab.find,
-      onWebViewCreated: (c) => tabs.onWebViewCreated(tab, c),
+      onWebViewCreated: (c) {
+        tabs.onWebViewCreated(tab, c);
+        c.addJavaScriptHandler(
+          handlerName: 'voxContentChanged',
+          callback: (args) {
+            if (tab.closed || !tabs.isActive(tab)) return;
+            final len = (args.length > 1 && args[1] is num)
+                ? (args[1] as num).toInt()
+                : 0;
+            reader.onContentChanged(len);
+          },
+        );
+      },
       onLoadStart: (c, uri) => tabs.onLoadStart(tab, uri),
       onProgressChanged: (c, p) => tabs.onProgress(tab, p),
       onTitleChanged: (c, t) => tabs.onTitle(tab, t),
-      onUpdateVisitedHistory: (c, uri, _) => tabs.onUrlChanged(tab, uri),
+      onUpdateVisitedHistory: (c, uri, _) async {
+        await tabs.onUrlChanged(tab, uri);
+        if (tab.closed || uri == null) return;
+        // progress >= 1 => not a normal page load, i.e. a SPA route change.
+        if (tabs.isActive(tab) && tab.progress.value >= 1) {
+          reader.onRouteChanged(uri.toString(),
+              autoPlay: settings.settings.autoReadOnLoad);
+        }
+      },
       onLoadStop: (c, uri) async {
         await tabs.onLoadStop(tab, uri);
         if (tab.closed) return;
@@ -42,9 +70,9 @@ class TabWebView extends StatelessWidget {
         }
         library.isBookmarked(tab.url).then(tab.setBookmarked).catchError((_) {});
 
-        // Only the visible tab feeds the reader.
         if (tabs.isActive(tab)) {
-          await reader.loadPage(autoPlay: settings.settings.autoReadOnLoad);
+          await reader.loadPage(
+              autoPlay: settings.settings.autoReadOnLoad, url: tab.url);
         }
       },
       onRenderProcessGone: (c, detail) => tabs.recover(tab),
@@ -58,15 +86,13 @@ class TabWebView extends StatelessWidget {
             await launchUrl(u.uriValue, mode: LaunchMode.externalApplication);
           } catch (_) {}
         }
-        return NavigationActionPolicy.CANCEL; // incl. intent:// (unsafe)
+        return NavigationActionPolicy.CANCEL;
       },
       onDownloadStartRequest: (c, req) async {
         try {
-          await launchUrl(req.url.uriValue,
-              mode: LaunchMode.externalApplication);
+          await launchUrl(req.url.uriValue, mode: LaunchMode.externalApplication);
         } catch (_) {}
       },
-      // Deny camera/mic/etc. by default.
       onPermissionRequest: (c, req) async => PermissionResponse(
           resources: req.resources, action: PermissionResponseAction.DENY),
     );
