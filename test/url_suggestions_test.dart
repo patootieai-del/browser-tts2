@@ -3,7 +3,12 @@ import 'package:vox_browser/core/utils/url_suggestions.dart';
 
 UrlSuggestion s(String url,
         {String title = '', int visits = 1, bool bm = false, DateTime? last}) =>
-    UrlSuggestion(url: url, title: title, visits: visits, isBookmark: bm, lastVisit: last);
+    UrlSuggestion(
+        url: url,
+        title: title,
+        visits: visits,
+        isBookmark: bm,
+        lastVisit: last);
 
 final now = DateTime(2025, 1, 15);
 
@@ -59,7 +64,23 @@ void main() {
   });
 
   test('respects the limit', () {
-    final many = [for (var i = 0; i < 20; i++) s('https://site$i.com', title: 'site')];
+    final many = [
+      for (var i = 0; i < 20; i++) s('https://site$i.com', title: 'site')
+    ];
     expect(UrlRanker.rank(many, 'site', limit: 6).length, 6);
+  });
+
+  group('recent', () {
+    test('distinct pages, newest first, limited', () {
+      final rows = [
+        s('https://a.com/', title: 'A'),
+        s('https://www.b.com', title: 'B'),
+        s('http://a.com', title: 'A again'), // same page as the first
+        s('https://c.com', title: 'C'),
+      ];
+      final r = UrlRanker.recent(rows, limit: 3);
+      expect(r.map((e) => e.title), ['A', 'B', 'C']);
+      expect(UrlRanker.recent(rows, limit: 2).length, 2);
+    });
   });
 }

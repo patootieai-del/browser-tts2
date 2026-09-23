@@ -160,4 +160,23 @@ class DatabaseService {
         ),
     ];
   }
+
+  /// Newest visits first. Scans a bounded window, so it stays fast on huge
+  /// histories; de-duplication happens in UrlRanker.recent.
+  Future<List<UrlSuggestion>> recentHistory({int scan = 200}) async {
+    final d = await db;
+    final rows = await d.query('history',
+        columns: ['url', 'title', 'visited_at'],
+        orderBy: 'visited_at DESC',
+        limit: scan);
+    return [
+      for (final r in rows)
+        UrlSuggestion(
+          url: r['url'] as String,
+          title: (r['title'] as String?) ?? '',
+          lastVisit:
+              DateTime.fromMillisecondsSinceEpoch(r['visited_at'] as int),
+        ),
+    ];
+  }
 }

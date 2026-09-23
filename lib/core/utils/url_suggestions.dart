@@ -118,4 +118,18 @@ class UrlRanker {
     });
     return scored.take(limit).map((e) => e.$2).toList();
   }
+
+  /// Newest-first history rows -> distinct pages, most recent first.
+  static List<UrlSuggestion> recent(Iterable<UrlSuggestion> newestFirst,
+      {int limit = 12}) {
+    final seen = <String>{};
+    final out = <UrlSuggestion>[];
+    for (final s in newestFirst) {
+      if (seen.add(key(s.url))) {
+        out.add(s);
+        if (out.length >= limit) break;
+      }
+    }
+    return out;
+  }
 }

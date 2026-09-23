@@ -66,4 +66,12 @@ class LibraryController extends ChangeNotifier {
       return const [];
     }
   }
+
+  Future<List<UrlSuggestion>> recent() async {
+    try {
+      return UrlRanker.recent(await _db.recentHistory());
+    } catch (_) {
+      return const [];
+    }
+  }
 }

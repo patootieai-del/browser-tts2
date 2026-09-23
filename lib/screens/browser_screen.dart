@@ -86,6 +86,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
             url: tab.url,
             incognito: tab.incognito,
             suggest: library.suggest,
+            recent: library.recent, 
             focusNode: _urlFocus, 
             onSubmit: (v) =>
                 tabs.load(UrlResolver.resolve(v, engine, AppConfig.homeUrl)),
