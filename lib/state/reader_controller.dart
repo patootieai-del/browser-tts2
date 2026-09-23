@@ -7,31 +7,44 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import '../core/utils/text_chunker.dart';
 import '../core/utils/text_map.dart';
 import '../models/article.dart';
+import '../models/page_probe.dart';
+import '../models/reader_notice.dart';
 import '../services/extraction_service.dart';
 import '../services/settings_service.dart';
 import '../services/speech_engine.dart';
+import 'chapter_rule_store.dart';
 
 enum ReaderState { idle, extracting, playing, paused, error }
 
-/// INVARIANT: the chunk that is spoken, the chunk that is highlighted and
-/// [index] are always the same chunk. (See token notes below.)
+class _Fresh {
+  const _Fresh(this.article, this.chunks);
+  final Article article;
+  final List<String> chunks;
+}
+
+/// INVARIANT: the chunk that is spoken, highlighted and [index] always agree
+/// (token-guarded loop; see _run).
 ///
-/// SPA SUPPORT: content can change without a page load. The chunks can be
-/// rebuilt from the live page via [refresh] / [restart]; page-side DOM
-/// changes arrive through [onContentChanged]; pushState navigations arrive
-/// through [onRouteChanged]. Speech is never interrupted by *automatic*
-/// detection, only by explicit user actions.
+/// CHAPTERS: when the last chunk ends and a next-chapter rule matches the
+/// page URL, the saved element is clicked and reading continues with the new
+/// content. ANY failure stops auto-read and raises a [ReaderNotice].
 class ReaderController extends ChangeNotifier {
   ReaderController({
     required SpeechEngine tts,
     required ExtractionService extractor,
+    ChapterRuleLookup? rules,
     this.autoRefreshDelay = const Duration(milliseconds: 1200),
     this.autoRefreshMinGap = const Duration(seconds: 5),
+    this.advancePoll = const Duration(milliseconds: 500),
+    this.advanceNoChangeTimeout = const Duration(seconds: 10),
+    this.advanceLoadTimeout = const Duration(seconds: 30),
   })  : _tts = tts,
-        _extractor = extractor {
+        _extractor = extractor,
+        _rules = rules {
     _tts.onError = (m) {
       if (_disposed) return;
       _sessionToken++;
+      _cancelAdvance();
       _error = m;
       _state = ReaderState.error;
       notifyListeners();
@@ -40,8 +53,12 @@ class ReaderController extends ChangeNotifier {
 
   final SpeechEngine _tts;
   final ExtractionService _extractor;
+  final ChapterRuleLookup? _rules;
   final Duration autoRefreshDelay;
   final Duration autoRefreshMinGap;
+  final Duration advancePoll;
+  final Duration advanceNoChangeTimeout;
+  final Duration advanceLoadTimeout;
 
   InAppWebViewController? _webRef;
   PageContentSource? _source;
@@ -61,10 +78,18 @@ class ReaderController extends ChangeNotifier {
   Timer? _autoTimer;
   DateTime _lastAuto = DateTime.fromMillisecondsSinceEpoch(0);
 
-  int _sessionToken = 0; // which playback loop/utterance is current
-  int _loadToken = 0; // which extraction is current
-  int _hlToken = 0; // which highlight request is current
-  int _opSeq = 0; // serialises transport operations
+  // chapter advance
+  bool _advancing = false;
+  bool _navStarted = false;
+  int _advToken = 0;
+  List<String> _advBeforeChunks = const [];
+  ReaderNotice? _notice;
+  int _chaptersAdvanced = 0;
+
+  int _sessionToken = 0;
+  int _loadToken = 0;
+  int _hlToken = 0;
+  int _opSeq = 0;
 
   Article? get article => _article;
   List<String> get chunks => _chunks;
@@ -74,12 +99,21 @@ class ReaderController extends ChangeNotifier {
   bool get hasContent => _chunks.isNotEmpty;
   bool get isPlaying => _state == ReaderState.playing;
   bool get isStale => _stale;
+  bool get isAdvancing => _advancing;
+  ReaderNotice? get notice => _notice;
+  int get chaptersAdvanced => _chaptersAdvanced;
   String get currentChunk =>
       (_index >= 0 && _index < _chunks.length) ? _chunks[_index] : '';
   double get progress => _chunks.isEmpty ? 0 : (_index + 1) / _chunks.length;
 
   void _notify() {
     if (!_disposed) notifyListeners();
+  }
+
+  void clearNotice() {
+    if (_notice == null) return;
+    _notice = null;
+    _notify();
   }
 
   // ------------------------------------------------------------- binding
@@ -89,12 +123,12 @@ class ReaderController extends ChangeNotifier {
     bindSource(c == null ? null : _extractor.forController(c));
   }
 
-  /// Also used by tests to inject a fake page.
   void bindSource(PageContentSource? s) {
     _sessionToken++;
     _loadToken++;
     _hlToken++;
     _opSeq++;
+    _cancelAdvance();
     _autoTimer?.cancel();
     _autoTimer = null;
     unawaited(_tts.stop());
@@ -106,6 +140,7 @@ class ReaderController extends ChangeNotifier {
     _chunks = const [];
     _index = 0;
     _error = null;
+    _notice = null;
     _pageUrl = null;
     _baselineLen = 0;
     _stale = false;
@@ -126,7 +161,7 @@ class ReaderController extends ChangeNotifier {
     if (volChanged) await _tts.setVolume(s.volume);
     if (voiceChanged) await _tts.applyVoice(s.voiceName, s.voiceLocale);
 
-    if (isPlaying && (rateChanged || pitchChanged || voiceChanged)) {
+    if (isPlaying && !_advancing && (rateChanged || pitchChanged || voiceChanged)) {
       _sessionToken++;
       await _tts.stop();
       if (isPlaying && !_disposed) unawaited(_run());
@@ -134,9 +169,14 @@ class ReaderController extends ChangeNotifier {
   }
 
   // -------------------------------------------------------------- loading
-  /// Full (re)load: a NEW page. Stops speech and resets position.
+  /// Full (re)load of a NEW page. If a chapter advance is in flight this is
+  /// its "arrival": it takes over and auto-plays.
   Future<void> loadPage({bool autoPlay = false, String? url}) async {
     final src = _source;
+    final takeover = _advancing;
+    final beforeChunks = _advBeforeChunks;
+    _cancelAdvance();
+
     final my = ++_loadToken;
     _sessionToken++;
     _hlToken++;
@@ -161,46 +201,64 @@ class ReaderController extends ChangeNotifier {
       return;
     }
 
-    try {
-      final a = await src.extract(settle: true);
-      if (my != _loadToken || _disposed) return;
-      if (a == null) {
-        _state = ReaderState.idle;
-        _error = 'No readable text found on this page.';
-        _notify();
-        return;
-      }
-      _article = a;
-      _baselineLen = a.domLength;
-      if (a.url.isNotEmpty) _pageUrl = a.url;
-      _chunks = TextChunker.chunk('${a.title}. \n\n${a.text}');
+    final f = await _extractFresh(src);
+    if (my != _loadToken || _disposed) return;
+
+    if (f == null) {
+      if (takeover) return _failAdvance(NoticeKind.nextEmpty);
       _state = ReaderState.idle;
+      _error = 'No readable text found on this page.';
       _notify();
-      if (autoPlay && _chunks.isNotEmpty) await play();
-    } catch (e) {
-      if (my != _loadToken || _disposed) return;
-      _error = e.toString();
-      _state = ReaderState.error;
-      _notify();
+      return;
     }
+    if (takeover && listEquals(f.chunks, beforeChunks)) {
+      return _failAdvance(NoticeKind.nextNoChange); // navigated to same content
+    }
+
+    _applyFresh(f, keepPosition: false);
+    if (takeover) _chaptersAdvanced++;
+    _state = ReaderState.idle;
+    _notify();
+    if ((autoPlay || takeover) && _chunks.isNotEmpty) await play();
   }
 
-  /// Re-read the LIVE page and rebuild the chunks without reloading it.
-  ///
-  ///  * Unchanged content -> chunks are kept (same list instance).
-  ///  * [keepPosition]: stay on the current sentence if it still exists in
-  ///    the new content (e.g. content was appended); otherwise go to top.
-  ///  * If it was playing, playback continues from the resulting position.
+  Future<_Fresh?> _extractFresh(PageContentSource src) async {
+    Article? a;
+    try {
+      a = await src.extract(settle: true);
+    } catch (_) {
+      a = null;
+    }
+    if (a == null) return null;
+    final chunks = TextChunker.chunk('${a.title}. \n\n${a.text}');
+    return chunks.isEmpty ? null : _Fresh(a, chunks);
+  }
+
+  void _applyFresh(_Fresh f, {required bool keepPosition}) {
+    final old = currentChunk;
+    _mapFuture = null;
+    _stale = false;
+    _error = null;
+    _article = f.article;
+    _baselineLen = f.article.domLength;
+    if (f.article.url.isNotEmpty) _pageUrl = f.article.url;
+    _chunks = f.chunks;
+    final at = (keepPosition && old.isNotEmpty) ? f.chunks.indexOf(old) : -1;
+    _index = at >= 0 ? at : 0;
+  }
+
+  /// Re-read the LIVE page without reloading it (see earlier notes).
   Future<void> refresh({bool keepPosition = true}) async {
     final src = _source;
     if (src == null || _disposed || _state == ReaderState.extracting) return;
     _autoTimer?.cancel();
+    _cancelAdvance();
 
     final op = ++_opSeq;
     final prev = _state;
     final wasPlaying = prev == ReaderState.playing;
 
-    _sessionToken++; // the running utterance/loop becomes stale
+    _sessionToken++;
     _hlToken++;
     if (wasPlaying) {
       _state = ReaderState.extracting;
@@ -223,64 +281,47 @@ class ReaderController extends ChangeNotifier {
     if (_state == ReaderState.playing) unawaited(_run());
   }
 
-  /// Restart: re-check the page, rebuild if it changed, go to the top.
   Future<void> restart() async {
     if (_source == null) return;
     if (_chunks.isEmpty) return loadPage(autoPlay: true, url: _pageUrl);
     await refresh(keepPosition: false);
   }
 
-  Future<bool> _rebuild(PageContentSource src,
-      {required bool keepPosition}) async {
+  Future<bool> _rebuild(PageContentSource src, {required bool keepPosition}) async {
     final my = ++_loadToken;
-    Article? a;
-    try {
-      a = await src.extract(settle: true);
-    } catch (_) {
-      a = null;
-    }
+    final f = await _extractFresh(src);
     if (my != _loadToken || _disposed || !identical(src, _source)) return false;
-
-    _mapFuture = null; // the DOM may have been re-rendered: new node ids
+    _mapFuture = null;
     _stale = false;
-    if (a == null) return false;
-    _baselineLen = a.domLength;
-    if (a.url.isNotEmpty) _pageUrl = a.url;
-
-    final fresh = TextChunker.chunk('${a.title}. \n\n${a.text}');
-    if (fresh.isEmpty) return false;
-    if (listEquals(fresh, _chunks)) {
-      _article = a;
-      return true; // unchanged: keep the very same list
+    if (f == null) return false;
+    if (listEquals(f.chunks, _chunks)) {
+      _article = f.article;
+      _baselineLen = f.article.domLength;
+      if (f.article.url.isNotEmpty) _pageUrl = f.article.url;
+      return true; // unchanged: same list instance
     }
-    final old = currentChunk;
-    _article = a;
-    _chunks = fresh;
-    _error = null;
-    final at = (keepPosition && old.isNotEmpty) ? fresh.indexOf(old) : -1;
-    _index = at >= 0 ? at : 0;
+    _applyFresh(f, keepPosition: keepPosition);
     return true;
   }
 
   // ------------------------------------------------- SPA change detection
-  /// The page reported DOM changes (debounced JS MutationObserver).
   void onContentChanged(int domLength) {
-    if (_disposed || _source == null || _state == ReaderState.extracting) return;
+    if (_disposed || _source == null || _advancing || _state == ReaderState.extracting) {
+      return;
+    }
     final threshold = math.max(80, _baselineLen * 0.02);
     final material = _chunks.isEmpty || (domLength - _baselineLen).abs() >= threshold;
-    if (!material) return; // clocks, counters, carousels...
+    if (!material) return;
 
     if (!_stale) {
       _stale = true;
       _notify();
     }
-    if (isPlaying) return; // never interrupt speech automatically
+    if (isPlaying) return;
 
     _autoTimer?.cancel();
     final since = DateTime.now().difference(_lastAuto);
-    final wait = since < autoRefreshMinGap
-        ? autoRefreshMinGap - since
-        : autoRefreshDelay;
+    final wait = since < autoRefreshMinGap ? autoRefreshMinGap - since : autoRefreshDelay;
     _autoTimer = Timer(wait, () {
       if (_disposed || isPlaying || _state == ReaderState.extracting) return;
       _lastAuto = DateTime.now();
@@ -288,13 +329,14 @@ class ReaderController extends ChangeNotifier {
     });
   }
 
-  /// URL changed without a page load (history.pushState etc.).
   void onRouteChanged(String url, {bool autoPlay = false}) {
-    if (_disposed || _source == null || _state == ReaderState.extracting) return;
-    if (_sameDocument(url, _pageUrl)) return; // fragment-only / same page
+    if (_disposed || _source == null || _advancing || _state == ReaderState.extracting) {
+      return;
+    }
+    if (_sameDocument(url, _pageUrl)) return;
     _pageUrl = url;
     if (isPlaying) {
-      _stale = true; // offer a refresh, don't cut the speech
+      _stale = true;
       _notify();
       return;
     }
@@ -316,6 +358,123 @@ class ReaderController extends ChangeNotifier {
     return ua.removeFragment() == ub.removeFragment();
   }
 
+  /// A real page load started (WebView onLoadStart).
+  void onNavigationStarted() {
+    if (_advancing) _navStarted = true;
+  }
+
+  // ------------------------------------------------------- chapter advance
+  bool get _canAdvance =>
+      _settings.autoNextChapter &&
+      _source != null &&
+      _rules?.match(_pageUrl ?? '') != null;
+
+  void _cancelAdvance() {
+    _advToken++;
+    _advancing = false;
+    _navStarted = false;
+  }
+
+  /// User pressed "next chapter" (button, notification, headset).
+  Future<void> nextChapter() async {
+    final src = _source;
+    if (src == null || _disposed) return;
+    if (_rules?.match(_pageUrl ?? '') == null) {
+      _notice = ReaderNotice.of(NoticeKind.noRule);
+      _notify();
+      return;
+    }
+    final op = ++_opSeq;
+    _cancelAdvance();
+    _sessionToken++;
+    _hlToken++;
+    await _tts.stop();
+    if (op != _opSeq || _disposed) return;
+    unawaited(_advanceChapter());
+  }
+
+  void _failAdvance(NoticeKind kind, [String? reason]) {
+    _advToken++;
+    _advancing = false;
+    _navStarted = false;
+    _hlToken++;
+    _state = ReaderState.idle; // auto-read STOPS
+    _notice = ReaderNotice.of(kind, reason);
+    _notify();
+  }
+
+  Future<void> _advanceChapter() async {
+    final src = _source;
+    final rule = _rules?.match(_pageUrl ?? '');
+    if (src == null || rule == null) return;
+
+    final token = ++_advToken;
+    bool alive() => token == _advToken && !_disposed && identical(src, _source);
+
+    _advancing = true;
+    _navStarted = false;
+    _advBeforeChunks = _chunks;
+    _state = ReaderState.playing;
+    _notice = null;
+    _hlToken++;
+    _notify();
+    unawaited(src.clearHighlight());
+
+    final before = await src.fingerprint();
+    if (!alive()) return;
+
+    final click = await src.clickElement(rule.selector);
+    if (!alive()) return;
+    switch (click.status) {
+      case ClickStatus.notFound:
+        return _failAdvance(NoticeKind.nextNotFound);
+      case ClickStatus.notClickable:
+        return _failAdvance(NoticeKind.nextNotClickable, click.reason);
+      case ClickStatus.clicked:
+        break;
+    }
+
+    // Wait for: (a) a real navigation -> loadPage() takes over, or
+    // (b) the content changing in place (SPA) -> verify and apply here.
+    final sw = Stopwatch()..start();
+    var last = before;
+    while (true) {
+      await Future<void>.delayed(advancePoll);
+      if (!alive()) return;
+
+      final limit = _navStarted ? advanceLoadTimeout : advanceNoChangeTimeout;
+      if (sw.elapsed > limit) {
+        return _failAdvance(_navStarted ? NoticeKind.nextTimeout : NoticeKind.nextNoChange);
+      }
+      if (_navStarted) continue; // loadPage() will complete the hand-over
+
+      final fp = await src.fingerprint();
+      if (!alive()) return;
+      if (fp == null || fp == last) continue;
+      last = fp;
+      if (before != null && fp == before) continue;
+
+      // Looks changed. Give a navigation a moment to announce itself so we
+      // don't race the WebView's own onLoadStop.
+      await Future<void>.delayed(advancePoll);
+      if (!alive()) return;
+      if (_navStarted) continue;
+
+      final fresh = await _extractFresh(src);
+      if (!alive()) return;
+      if (fresh == null) continue; // not readable yet
+      if (listEquals(fresh.chunks, _advBeforeChunks)) continue; // cosmetic change
+
+      _advancing = false;
+      _applyFresh(fresh, keepPosition: false);
+      _chaptersAdvanced++;
+      _state = ReaderState.playing;
+      _notify();
+      unawaited(_run()); // auto-read the new chapter
+      return;
+    }
+  }
+
   // ------------------------------------------------------------ transport
   Future<void> play() async {
     if (_chunks.isEmpty) return loadPage(autoPlay: true, url: _pageUrl);
@@ -326,6 +485,7 @@ class ReaderController extends ChangeNotifier {
     await _tts.setVolume(_settings.volume);
     await _tts.applyVoice(_settings.voiceName, _settings.voiceLocale);
     if (op != _opSeq || _disposed) return;
+    _notice = null;
     _state = ReaderState.playing;
     _notify();
     unawaited(_run());
@@ -334,6 +494,7 @@ class ReaderController extends ChangeNotifier {
   Future<void> pause() async {
     _opSeq++;
     _sessionToken++;
+    _cancelAdvance();
     _state = ReaderState.paused;
     _notify();
     final ok = await _tts.pause();
@@ -346,6 +507,7 @@ class ReaderController extends ChangeNotifier {
     _opSeq++;
     _sessionToken++;
     _hlToken++;
+    _cancelAdvance();
     _state = ReaderState.idle;
     _notify();
     await _tts.stop();
@@ -361,6 +523,7 @@ class ReaderController extends ChangeNotifier {
     final op = ++_opSeq;
     _sessionToken++;
     _hlToken++;
+    _cancelAdvance();
     await _tts.stop();
     if (op != _opSeq || _disposed) return;
     _index = i.clamp(0, _chunks.length - 1);
@@ -371,9 +534,7 @@ class ReaderController extends ChangeNotifier {
   Future<void> _run() async {
     final token = ++_sessionToken;
     while (true) {
-      if (token != _sessionToken || _disposed || _state != ReaderState.playing) {
-        return;
-      }
+      if (token != _sessionToken || _disposed || _state != ReaderState.playing) return;
       final idx = _index;
       final text = currentChunk;
       if (text.isEmpty) return;
@@ -391,11 +552,13 @@ class ReaderController extends ChangeNotifier {
         return;
       }
 
-      if (token != _sessionToken || _disposed || _state != ReaderState.playing) {
-        return;
-      }
+      if (token != _sessionToken || _disposed || _state != ReaderState.playing) return;
 
       if (idx + 1 >= _chunks.length) {
+        if (_canAdvance) {
+          unawaited(_advanceChapter()); // keeps state == playing
+          return;
+        }
         _state = ReaderState.idle;
         _hlToken++;
         _notify();
@@ -414,18 +577,16 @@ class ReaderController extends ChangeNotifier {
     if (src == null) return;
     final t = ++_hlToken;
     try {
-      final map = await (_mapFuture ??=
-          src.snapshotTextNodes().then((n) => TextMap(n)));
+      final map = await (_mapFuture ??= src.snapshotTextNodes().then((n) => TextMap(n)));
       if (t != _hlToken || _disposed || !identical(src, _source)) return;
-
       final r = map.locateForIndex(idx, text);
       if (r == null) {
-        await src.clearHighlight(); // no confident match: show nothing
+        await src.clearHighlight();
         return;
       }
       if (t != _hlToken || _disposed) return;
       final ok = await src.highlight(r);
-      if (!ok) _mapFuture = null; // page re-rendered: re-snapshot next time
+      if (!ok) _mapFuture = null;
     } catch (_) {
       _mapFuture = null;
     }
@@ -438,6 +599,7 @@ class ReaderController extends ChangeNotifier {
     _loadToken++;
     _hlToken++;
     _opSeq++;
+    _cancelAdvance();
     _autoTimer?.cancel();
     _tts.onError = null;
     unawaited(_tts.stop());

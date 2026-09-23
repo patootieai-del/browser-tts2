@@ -5,10 +5,15 @@ import 'package:provider/provider.dart';
 
 import '../core/app_config.dart';
 import '../core/utils/url_resolver.dart';
+import '../services/keep_awake.dart';
+import '../state/chapter_rule_store.dart';
 import '../state/library_controller.dart';
 import '../state/settings_controller.dart';
 import '../state/tabs_controller.dart';
+import '../state/element_picker_controller.dart';
+import '../state/reader_controller.dart';
 import '../widgets/app_drawer.dart';
+import '../widgets/chapter_rule_sheet.dart';
 import '../widgets/find_bar.dart';
 import '../widgets/tab_webview.dart';
 import '../widgets/tts_control_bar.dart';
@@ -22,12 +27,77 @@ class BrowserScreen extends StatefulWidget {
   State<BrowserScreen> createState() => _BrowserScreenState();
 }
 
-class _BrowserScreenState extends State<BrowserScreen> {
+class _BrowserScreenState extends State<BrowserScreen>
+    with WidgetsBindingObserver {
   final _urlFocus = FocusNode(debugLabel: 'urlBar');
+  late final ReaderController _reader;
+  late final ElementPickerController _picker;
+  bool _resumed = true, _noticeOpen = false, _sheetOpen = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _reader = context.read<ReaderController>()..addListener(_onReader);
+    _picker = context.read<ElementPickerController>()..addListener(_onPicker);
+    WidgetsBinding.instance.addPostFrameCallback(
+        (_) => BackgroundSetup.ensureNotificationPermission());
+  }
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _reader.removeListener(_onReader);
+    _picker.removeListener(_onPicker);
     _urlFocus.dispose();
     super.dispose();
+  }
+
+  void _onReader() {
+    final n = _reader.notice;
+    if (n == null || !_resumed || _noticeOpen || !mounted) return;
+    _noticeOpen = true;
+    _reader.clearNotice();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) {
+        _noticeOpen = false;
+        return;
+      }
+      final fix = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          icon: const Icon(Icons.stop_circle_outlined),
+          title: const Text('Auto-read stopped'),
+          content: Text(n.message),
+          actions: [
+            if (n.canFix)
+              TextButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('Set button again')),
+            TextButton(
+                onPressed: () => Navigator.pop(ctx), child: const Text('OK')),
+          ],
+        ),
+      );
+      _noticeOpen = false;
+      if (fix == true && mounted) {
+        _picker.start(context.read<TabsController>().active);
+      }
+    });
+  }
+
+  void _onPicker() {
+    if (_picker.picked == null || _sheetOpen || !mounted) return;
+    _sheetOpen = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) {
+        _sheetOpen = false;
+        return;
+      }
+      await showChapterRuleSheet(context,
+          picker: _picker, rules: context.read<ChapterRuleStore>());
+      _sheetOpen = false;
+    });
   }
 
   Future<void> _openSwitcher(BuildContext context, TabsController tabs) async {
@@ -57,6 +127,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
     final library = context.read<LibraryController>();
     final engine = context.read<SettingsController>().settings.searchEngine;
     final cs = Theme.of(context).colorScheme;
+    final picker = context.watch<ElementPickerController>();
 
     return PopScope(
       canPop: false,
@@ -70,7 +141,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
           return tab.controller!.goBack();
         }
         if (tabs.count > 1) return tabs.closeTab(tab.id);
-        SystemNavigator.pop(); 
+        SystemNavigator.pop();
       },
       child: Scaffold(
         drawer: const AppDrawer(),
@@ -86,8 +157,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
             url: tab.url,
             incognito: tab.incognito,
             suggest: library.suggest,
-            recent: library.recent, 
-            focusNode: _urlFocus, 
+            recent: library.recent,
+            focusNode: _urlFocus,
             onSubmit: (v) =>
                 tabs.load(UrlResolver.resolve(v, engine, AppConfig.homeUrl)),
           ),
@@ -133,6 +204,10 @@ class _BrowserScreenState extends State<BrowserScreen> {
                         context,
                         MaterialPageRoute(
                             builder: (_) => const ReaderScreen()));
+                  case 'set_next':
+                    context.read<ElementPickerController>().start(tab);
+                  case 'next_chapter':
+                    context.read<ReaderController>().nextChapter();
                 }
               },
               itemBuilder: (_) => [
@@ -176,6 +251,13 @@ class _BrowserScreenState extends State<BrowserScreen> {
                     child: _Item(Icons.tab_unselected, 'Close other tabs')),
                 const PopupMenuItem(
                     value: 'close', child: _Item(Icons.close, 'Close tab')),
+                const PopupMenuItem(
+                    value: 'set_next',
+                    child: _Item(Icons.ads_click, 'Set next-chapter button')),
+                const PopupMenuItem(
+                    value: 'next_chapter',
+                    child: _Item(
+                        Icons.keyboard_double_arrow_right, 'Next chapter now')),
               ],
             ),
           ],
@@ -199,6 +281,25 @@ class _BrowserScreenState extends State<BrowserScreen> {
                 child: Text('Incognito tab: history is not saved',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: cs.onInverseSurface, fontSize: 12)),
+              ),
+            if (picker.active && picker.picked == null)
+              Material(
+                color: cs.primaryContainer,
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  child: Row(children: [
+                    Icon(Icons.touch_app,
+                        size: 18, color: cs.onPrimaryContainer),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text('Tap the "Next chapter" button on the page',
+                          style: TextStyle(color: cs.onPrimaryContainer)),
+                    ),
+                    TextButton(
+                        onPressed: picker.stop, child: const Text('Cancel')),
+                  ]),
+                ),
               ),
             ValueListenableBuilder<bool>(
               valueListenable: tab.findVisible,

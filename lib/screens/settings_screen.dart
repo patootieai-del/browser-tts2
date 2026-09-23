@@ -2,10 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../core/theme/app_themes.dart';
+import '../services/keep_awake.dart';
 import '../services/settings_service.dart';
 import '../services/tts_service.dart';
+import '../state/chapter_rule_store.dart';
 import '../state/reader_controller.dart';
 import '../state/settings_controller.dart';
+import 'chapter_rules_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -128,6 +131,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           voiceName: picked.name, voiceLocale: picked.locale));
                     }
                   },
+          ),
+          const _SectionHeader('Reading across chapters'),
+          SwitchListTile(
+            title: const Text('Auto-advance to next chapter'),
+            subtitle: const Text(
+                'When a chapter ends, tap the saved "next" button and keep reading'),
+            value: s.autoNextChapter,
+            onChanged: (v) => apply(s.copyWith(autoNextChapter: v)),
+          ),
+          ListTile(
+            title: const Text('Saved next-chapter buttons'),
+            subtitle:
+                Text('${context.watch<ChapterRuleStore>().rules.length} saved'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const ChapterRulesScreen())),
+          ),
+          const _SectionHeader('Background reading'),
+          ListTile(
+            title: const Text('Allow unrestricted battery use'),
+            subtitle: const Text(
+                'Stops Android from ending long reading sessions with the screen off'),
+            onTap: () async {
+              final ok = await BackgroundSetup.requestUnrestrictedBattery();
+              if (!context.mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                  content: Text(
+                      ok ? 'Battery use is unrestricted' : 'Not changed')));
+            },
           ),
           SwitchListTile(
             title: const Text('Highlight sentence being read'),

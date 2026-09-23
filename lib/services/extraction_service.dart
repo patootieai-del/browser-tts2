@@ -3,10 +3,12 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import '../core/utils/text_map.dart';
 import '../models/article.dart';
+import 'dart:convert';
+import '../models/page_probe.dart';
 
 /// Everything ReaderController needs from a page. Faked in tests.
 abstract class PageContentSource {
-   /// [settle]: wait until the DOM stops changing before reading it.
+  /// [settle]: wait until the DOM stops changing before reading it.
   Future<Article?> extract({bool settle = false});
 
   /// Visible text nodes, in document order. Index == node id used by
@@ -17,13 +19,16 @@ abstract class PageContentSource {
 
   /// Remove the highlight. [release] also drops the page-side node list.
   Future<void> clearHighlight({bool release = false});
+
+  Future<PageFingerprint?> fingerprint();
+  Future<ClickResult> clickElement(String selector);
 }
 
 class ExtractionService {
   String? _readabilityJs;
 
-  Future<String> _lib() async =>
-      _readabilityJs ??= await rootBundle.loadString('assets/js/readability.js');
+  Future<String> _lib() async => _readabilityJs ??=
+      await rootBundle.loadString('assets/js/readability.js');
 
   PageContentSource forController(InAppWebViewController c) =>
       WebViewPageSource(c, _lib);
@@ -116,7 +121,7 @@ class WebViewPageSource implements PageContentSource {
         ''');
     } catch (_) {/* controller may already be disposed */}
   }
-  
+
   Future<void> _waitForSettle() async {
     try {
       await _c.callAsyncJavaScript(functionBody: '''
@@ -174,6 +179,78 @@ class WebViewPageSource implements PageContentSource {
       return a.isEmpty ? null : a;
     } catch (_) {
       return null;
+    }
+  }
+
+  @override
+  Future<PageFingerprint?> fingerprint() async {
+    try {
+      final r = await _c.evaluateJavascript(source: r'''
+(function () {
+  var t = document.body ? document.body.textContent : '';
+  return {url: location.href, title: document.title, len: t.length,
+          head: t.slice(0, 300), tail: t.slice(-300)};
+})();''');
+      if (r is! Map) return null; // page is mid-navigation
+      return PageFingerprint(
+        url: '${r['url']}',
+        title: '${r['title']}',
+        len: (r['len'] as num).toInt(),
+        head: '${r['head']}',
+        tail: '${r['tail']}',
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Finds the element, verifies it is really clickable, then clicks it.
+  @override
+  Future<ClickResult> clickElement(String selector) async {
+    try {
+      final r = await _c.evaluateJavascript(source: '''
+(function (sel) {
+  var el = null;
+  try { el = document.querySelector(sel); }
+  catch (e) { return {status: 'notFound', reason: 'invalid selector'}; }
+  if (!el) return {status: 'notFound'};
+  function bad(r) { return {status: 'notClickable', reason: r}; }
+  if (el.disabled) return bad('it is disabled');
+  if (el.getAttribute('aria-disabled') === 'true') return bad('it is marked as disabled');
+  var cn = (typeof el.className === 'string') ? el.className : '';
+  if (/(^|[\\s_-])disabled([\\s_-]|\$)/i.test(cn)) return bad('it looks disabled');
+  var cs = getComputedStyle(el);
+  if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) === 0)
+    return bad('it is hidden');
+  if (cs.pointerEvents === 'none') return bad('it does not accept clicks');
+  var r = el.getBoundingClientRect();
+  if (r.width < 1 || r.height < 1) return bad('it has no size');
+  el.scrollIntoView({block: 'center', inline: 'center'});
+  r = el.getBoundingClientRect();
+  var x = r.left + r.width / 2, y = r.top + r.height / 2;
+  var top = document.elementFromPoint(x, y);
+  if (top && top !== el && !el.contains(top) && !top.contains(el))
+    return bad('another element is covering it');
+  ['mousedown', 'mouseup', 'click'].forEach(function (type) {
+    el.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true,
+      view: window, clientX: x, clientY: y}));
+  });
+  var a = el.closest ? el.closest('a') : null;
+  return {status: 'clicked', href: a ? a.href : ''};
+})(${jsonEncode(selector)});
+''');
+      if (r is! Map)
+        return const ClickResult(ClickStatus.notFound, 'no response from page');
+      switch (r['status']) {
+        case 'clicked':
+          return ClickResult.clicked;
+        case 'notClickable':
+          return ClickResult(ClickStatus.notClickable, r['reason']?.toString());
+        default:
+          return ClickResult(ClickStatus.notFound, r['reason']?.toString());
+      }
+    } catch (_) {
+      return const ClickResult(ClickStatus.notFound, 'page not available');
     }
   }
 }

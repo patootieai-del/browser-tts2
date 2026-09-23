@@ -37,16 +37,32 @@ class TtsControlBar extends StatelessWidget {
                 child: Container(
                   width: double.infinity,
                   color: cs.tertiaryContainer,
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   child: Row(children: [
                     Icon(Icons.sync, size: 16, color: cs.onTertiaryContainer),
                     const SizedBox(width: 8),
                     Expanded(
-                      child: Text('Page content changed. Tap to refresh reading.',
-                          style: TextStyle(fontSize: 12, color: cs.onTertiaryContainer)),
+                      child: Text(
+                          'Page content changed. Tap to refresh reading.',
+                          style: TextStyle(
+                              fontSize: 12, color: cs.onTertiaryContainer)),
                     ),
                   ]),
                 ),
+              ),
+            if (r.isAdvancing)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 6),
+                child:
+                    Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                  SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2)),
+                  SizedBox(width: 8),
+                  Text('Loading next chapter…'),
+                ]),
               ),
             if (r.hasContent)
               Padding(
@@ -86,12 +102,32 @@ class TtsControlBar extends StatelessWidget {
                   icon: const Icon(Icons.skip_previous),
                   onPressed: r.hasContent ? r.previous : null,
                 ),
-                _PlayButton(busy: busy, playing: r.isPlaying,
-                    onTap: r.togglePlayPause),
+                _PlayButton(
+                    busy: busy, playing: r.isPlaying, onTap: r.togglePlayPause),
                 IconButton(
                   tooltip: 'Next sentence',
                   icon: const Icon(Icons.skip_next),
                   onPressed: r.hasContent ? r.next : null,
+                ),
+                IconButton(
+                  tooltip: 'Next chapter',
+                  icon: const Icon(Icons.keyboard_double_arrow_right),
+                  onPressed: r.isAdvancing ? null : r.nextChapter,
+                ),
+                PopupMenuButton<String>(
+                  icon: const Icon(Icons.more_vert),
+                  onSelected: (v) {
+                    if (v == 'speed') _showSpeedSheet(context);
+                    if (v == 'forward' && canGoForward) onWebForward();
+                  },
+                  itemBuilder: (_) => [
+                    const PopupMenuItem(
+                        value: 'speed', child: Text('Speed & pitch')),
+                    PopupMenuItem(
+                        value: 'forward',
+                        enabled: canGoForward,
+                        child: const Text('Page forward')),
+                  ],
                 ),
                 IconButton(
                   tooltip: 'Speed',
@@ -131,7 +167,8 @@ class TtsControlBar extends StatelessWidget {
                   divisions: 28,
                   onChanged: (v) async {
                     await sc.update(s.copyWith(speechRate: v));
-                    await ctx.read<ReaderController>()
+                    await ctx
+                        .read<ReaderController>()
                         .applySettings(sc.settings);
                   },
                 ),
@@ -143,7 +180,8 @@ class TtsControlBar extends StatelessWidget {
                   divisions: 30,
                   onChanged: (v) async {
                     await sc.update(s.copyWith(pitch: v));
-                    await ctx.read<ReaderController>()
+                    await ctx
+                        .read<ReaderController>()
                         .applySettings(sc.settings);
                   },
                 ),
@@ -172,7 +210,8 @@ class _PlayButton extends StatelessWidget {
       child: busy
           ? const Center(
               child: SizedBox(
-                  width: 24, height: 24,
+                  width: 24,
+                  height: 24,
                   child: CircularProgressIndicator(strokeWidth: 2)))
           : FloatingActionButton(
               heroTag: 'tts-play',

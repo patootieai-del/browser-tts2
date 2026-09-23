@@ -377,6 +377,15 @@ class TabsController extends ChangeNotifier with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused) unawaited(_saveNow());
+
+    // Reading continues in the background: keep the page's JS timers running
+    // so "next chapter" clicks, settle-waits and extraction keep working.
+    if (state != AppLifecycleState.resumed && _ready && _reader.isPlaying) {
+      final c = active.controller;
+      if (c != null) {
+        Future<void>.sync(c.resumeTimers).catchError((_) {});
+      }
+    }
   }
 
   @override

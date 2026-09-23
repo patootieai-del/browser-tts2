@@ -5,9 +5,9 @@ enum ThemeChoice { system, light, dark, midnight, sepia, dracula, oled }
 class AppSettings {
   final ThemeChoice theme;
   final bool useDynamicColor;
-  final double speechRate;   // 0.2 – 1.5 (flutter_tts android scale)
-  final double pitch;        // 0.5 – 2.0
-  final double volume;       // 0.0 – 1.0
+  final double speechRate; // 0.2 – 1.5 (flutter_tts android scale)
+  final double pitch; // 0.5 – 2.0
+  final double volume; // 0.0 – 1.0
   final String? voiceName;
   final String? voiceLocale;
   final bool highlightSentence;
@@ -15,6 +15,7 @@ class AppSettings {
   final bool keepScreenOn;
   final String searchEngine; // template with %s
   final double textScale;
+  final bool autoNextChapter;
 
   const AppSettings({
     this.theme = ThemeChoice.system,
@@ -29,6 +30,7 @@ class AppSettings {
     this.keepScreenOn = true,
     this.searchEngine = 'https://duckduckgo.com/?q=%s',
     this.textScale = 1.0,
+    this.autoNextChapter = true,
   });
 
   AppSettings copyWith({
@@ -44,6 +46,7 @@ class AppSettings {
     bool? keepScreenOn,
     String? searchEngine,
     double? textScale,
+    bool? autoNextChapter,
   }) =>
       AppSettings(
         theme: theme ?? this.theme,
@@ -58,6 +61,7 @@ class AppSettings {
         keepScreenOn: keepScreenOn ?? this.keepScreenOn,
         searchEngine: searchEngine ?? this.searchEngine,
         textScale: textScale ?? this.textScale,
+        autoNextChapter: autoNextChapter ?? this.autoNextChapter,
       );
 }
 
@@ -74,7 +78,7 @@ class SettingsService {
   static const _kKeepOn = 'keep_screen_on';
   static const _kEngine = 'search_engine';
   static const _kScale = 'text_scale';
-
+  static const _kAutoNext = 'auto_next_chapter';
   Future<AppSettings> load() async {
     final p = await SharedPreferences.getInstance();
     return AppSettings(
@@ -88,9 +92,9 @@ class SettingsService {
       highlightSentence: p.getBool(_kHighlight) ?? true,
       autoReadOnLoad: p.getBool(_kAutoRead) ?? false,
       keepScreenOn: p.getBool(_kKeepOn) ?? true,
-      searchEngine:
-          p.getString(_kEngine) ?? 'https://duckduckgo.com/?q=%s',
+      searchEngine: p.getString(_kEngine) ?? 'https://duckduckgo.com/?q=%s',
       textScale: p.getDouble(_kScale) ?? 1.0,
+      autoNextChapter: p.getBool(_kAutoNext) ?? true,
     );
   }
 
@@ -106,6 +110,7 @@ class SettingsService {
     await p.setBool(_kKeepOn, s.keepScreenOn);
     await p.setString(_kEngine, s.searchEngine);
     await p.setDouble(_kScale, s.textScale);
+    await p.setBool(_kAutoNext, s.autoNextChapter);
     if (s.voiceName != null) await p.setString(_kVoice, s.voiceName!);
     if (s.voiceLocale != null) {
       await p.setString(_kVoiceLocale, s.voiceLocale!);

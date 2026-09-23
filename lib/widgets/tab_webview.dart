@@ -12,6 +12,7 @@ import '../state/library_controller.dart';
 import '../state/reader_controller.dart';
 import '../state/settings_controller.dart';
 import '../state/tabs_controller.dart';
+import '../state/element_picker_controller.dart';
 
 class TabWebView extends StatelessWidget {
   const TabWebView({super.key, required this.tab});
@@ -23,6 +24,7 @@ class TabWebView extends StatelessWidget {
     final reader = context.read<ReaderController>();
     final library = context.read<LibraryController>();
     final settings = context.read<SettingsController>();
+    final picker = context.read<ElementPickerController>();
 
     return InAppWebView(
       initialUrlRequest: URLRequest(url: WebUri(tab.url)),
@@ -48,8 +50,23 @@ class TabWebView extends StatelessWidget {
             reader.onContentChanged(len);
           },
         );
+        c.addJavaScriptHandler(
+          handlerName: 'voxElementPicked',
+          callback: (args) {
+            if (tab.closed || args.isEmpty || args.first is! Map) return;
+            picker.onPicked(
+                tab.id, Map<String, dynamic>.from(args.first as Map));
+          },
+        );
       },
-      onLoadStart: (c, uri) => tabs.onLoadStart(tab, uri),
+      onLoadStart: (c, uri) {
+        tabs.onLoadStart(tab, uri);
+        if (tabs.isActive(tab)) {
+          reader
+              .onNavigationStarted(); // lets an in-flight chapter advance know
+          picker.onNavigation(tab.id);
+        }
+      },
       onProgressChanged: (c, p) => tabs.onProgress(tab, p),
       onTitleChanged: (c, t) => tabs.onTitle(tab, t),
       onUpdateVisitedHistory: (c, uri, _) async {
@@ -68,7 +85,10 @@ class TabWebView extends StatelessWidget {
         if (!tab.incognito) {
           unawaited(library.recordVisit(tab.url, tab.title));
         }
-        library.isBookmarked(tab.url).then(tab.setBookmarked).catchError((_) {});
+        library
+            .isBookmarked(tab.url)
+            .then(tab.setBookmarked)
+            .catchError((_) {});
 
         if (tabs.isActive(tab)) {
           await reader.loadPage(
@@ -90,7 +110,8 @@ class TabWebView extends StatelessWidget {
       },
       onDownloadStartRequest: (c, req) async {
         try {
-          await launchUrl(req.url.uriValue, mode: LaunchMode.externalApplication);
+          await launchUrl(req.url.uriValue,
+              mode: LaunchMode.externalApplication);
         } catch (_) {}
       },
       onPermissionRequest: (c, req) async => PermissionResponse(
