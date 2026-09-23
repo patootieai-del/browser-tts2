@@ -5,9 +5,7 @@ import 'package:provider/provider.dart';
 
 import '../core/app_config.dart';
 import '../core/utils/url_resolver.dart';
-import '../models/browser_tab.dart';
 import '../state/library_controller.dart';
-import '../state/reader_controller.dart';
 import '../state/settings_controller.dart';
 import '../state/tabs_controller.dart';
 import '../widgets/app_drawer.dart';
@@ -18,10 +16,22 @@ import '../widgets/url_bar.dart';
 import 'reader_screen.dart';
 import 'tab_switcher_screen.dart';
 
-class BrowserScreen extends StatelessWidget {
+class BrowserScreen extends StatefulWidget {
   const BrowserScreen({super.key});
+  @override
+  State<BrowserScreen> createState() => _BrowserScreenState();
+}
+
+class _BrowserScreenState extends State<BrowserScreen> {
+  final _urlFocus = FocusNode(debugLabel: 'urlBar');
+  @override
+  void dispose() {
+    _urlFocus.dispose();
+    super.dispose();
+  }
 
   Future<void> _openSwitcher(BuildContext context, TabsController tabs) async {
+    _urlFocus.unfocus();
     final t = tabs.active;
     try {
       // Small low-quality JPEG: ~15-30 KB. Only the active tab is captured.
@@ -33,8 +43,8 @@ class BrowserScreen extends StatelessWidget {
       );
     } catch (_) {}
     if (!context.mounted) return;
-    await Navigator.push(context,
-        MaterialPageRoute(builder: (_) => const TabSwitcherScreen()));
+    await Navigator.push(
+        context, MaterialPageRoute(builder: (_) => const TabSwitcherScreen()));
   }
 
   @override
@@ -52,12 +62,15 @@ class BrowserScreen extends StatelessWidget {
       canPop: false,
       onPopInvokedWithResult: (didPop, _) async {
         if (didPop) return;
+
+        // 1. URL bar active -> just drop focus (hides suggestions + reverts).
+        if (_urlFocus.hasFocus) return _urlFocus.unfocus();
         if (tab.findVisible.value) return tabs.closeFind(tab);
         if (await tab.controller?.canGoBack() ?? false) {
           return tab.controller!.goBack();
         }
         if (tabs.count > 1) return tabs.closeTab(tab.id);
-        SystemNavigator.pop(); // NOT maybePop(): that re-enters this PopScope
+        SystemNavigator.pop(); 
       },
       child: Scaffold(
         drawer: const AppDrawer(),
@@ -73,13 +86,13 @@ class BrowserScreen extends StatelessWidget {
             url: tab.url,
             incognito: tab.incognito,
             suggest: library.suggest,
-            onSubmit: (v) => tabs
-                .load(UrlResolver.resolve(v, engine, AppConfig.homeUrl)),
+            focusNode: _urlFocus, 
+            onSubmit: (v) =>
+                tabs.load(UrlResolver.resolve(v, engine, AppConfig.homeUrl)),
           ),
           actions: [
             _TabCountButton(
-                count: tabs.count,
-                onTap: () => _openSwitcher(context, tabs)),
+                count: tabs.count, onTap: () => _openSwitcher(context, tabs)),
             PopupMenuButton<String>(
               onSelected: (v) async {
                 switch (v) {
@@ -94,8 +107,8 @@ class BrowserScreen extends StatelessWidget {
                     tab.setBookmarked(added);
                     if (!context.mounted) return;
                     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                        content: Text(
-                            added ? 'Bookmark added' : 'Bookmark removed'),
+                        content:
+                            Text(added ? 'Bookmark added' : 'Bookmark removed'),
                         duration: const Duration(seconds: 1)));
                   case 'find':
                     tabs.openFind(tab);
@@ -115,12 +128,15 @@ class BrowserScreen extends StatelessWidget {
                     await tab.controller?.reload();
                   case 'reader':
                     if (!context.mounted) return;
-                    Navigator.push(context,
-                        MaterialPageRoute(builder: (_) => const ReaderScreen()));
+                    Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) => const ReaderScreen()));
                 }
               },
               itemBuilder: (_) => [
-                const PopupMenuItem(value: 'new', child: _Item(Icons.add, 'New tab')),
+                const PopupMenuItem(
+                    value: 'new', child: _Item(Icons.add, 'New tab')),
                 const PopupMenuItem(
                     value: 'new_incognito',
                     child: _Item(Icons.visibility_off, 'New incognito tab')),
@@ -129,7 +145,9 @@ class BrowserScreen extends StatelessWidget {
                     value: 'bookmark',
                     child: _Item(
                         tab.bookmarked.value ? Icons.star : Icons.star_border,
-                        tab.bookmarked.value ? 'Remove bookmark' : 'Add bookmark')),
+                        tab.bookmarked.value
+                            ? 'Remove bookmark'
+                            : 'Add bookmark')),
                 const PopupMenuItem(
                     value: 'find', child: _Item(Icons.search, 'Find on page')),
                 CheckedPopupMenuItem(
@@ -150,7 +168,8 @@ class BrowserScreen extends StatelessWidget {
                 const PopupMenuItem(
                     value: 'reload', child: _Item(Icons.refresh, 'Reload')),
                 const PopupMenuItem(
-                    value: 'reread', child: _Item(Icons.sync, 'Re-read page content')),
+                    value: 'reread',
+                    child: _Item(Icons.sync, 'Re-read page content')),
                 const PopupMenuItem(
                     value: 'close_others',
                     child: _Item(Icons.tab_unselected, 'Close other tabs')),
@@ -244,7 +263,9 @@ class _TabCountButton extends StatelessWidget {
         ),
         child: Text(count > 99 ? ':D' : '$count',
             style: TextStyle(
-                fontSize: 11, fontWeight: FontWeight.bold, color: cs.onSurface)),
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+                color: cs.onSurface)),
       ),
     );
   }

@@ -10,6 +10,7 @@ Widget _host({
   String url = _url,
   ValueChanged<String>? onSubmit,
   Future<List<UrlSuggestion>> Function(String)? suggest,
+  FocusNode? focusNode,
 }) =>
     MaterialApp(
       home: Scaffold(
@@ -21,7 +22,8 @@ Widget _host({
                 url: url,
                 incognito: false,
                 onSubmit: onSubmit ?? (_) {},
-                suggest: suggest),
+                suggest: suggest,
+                focusNode: focusNode),
           ),
         ),
       ),
@@ -157,5 +159,67 @@ void main() {
     await tester.pumpWidget(_host(url: 'https://b.test'));
     await tester.pump();
     expect(_controller(tester).text, 'https://b.test');
+  });
+
+  testWidgets('tapping elsewhere unfocuses, hides suggestions and reverts',
+      (tester) async {
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: Column(children: [
+          SizedBox(
+            width: 320,
+            child: UrlBar(
+                url: _url,
+                incognito: false,
+                onSubmit: (_) {},
+                suggest: _suggest),
+          ),
+          const SizedBox(height: 200, width: 320, child: Text('elsewhere')),
+        ]),
+      ),
+    ));
+
+    await tester.enterText(find.byType(TextField), 'flut');
+    await tester.pumpAndSettle();
+    expect(find.text('Flutter docs'), findsOneWidget);
+
+    await tester.tapAt(tester.getCenter(find.text('elsewhere')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Flutter docs'), findsNothing); // hidden
+    expect(_controller(tester).text, _url); // reverted
+    expect(FocusManager.instance.primaryFocus?.hasFocus, isNot(true));
+  });
+
+  testWidgets('an external focus node can unfocus the bar (back button path)',
+      (tester) async {
+    final node = FocusNode();
+    addTearDown(node.dispose);
+    await tester.pumpWidget(_host(suggest: _suggest, focusNode: node));
+
+    await tester.enterText(find.byType(TextField), 'flut');
+    await tester.pumpAndSettle();
+    expect(node.hasFocus, isTrue);
+    expect(find.text('Flutter docs'), findsOneWidget);
+
+    node.unfocus(); // what PopScope does
+    await tester.pumpAndSettle();
+
+    expect(node.hasFocus, isFalse);
+    expect(find.text('Flutter docs'), findsNothing);
+    expect(_controller(tester).text, _url);
+  });
+
+  testWidgets('the suggestion list matches the field width and x-position',
+      (tester) async {
+    await tester.pumpWidget(_host(suggest: _suggest));
+    await tester.enterText(find.byType(TextField), 'flut');
+    await tester.pumpAndSettle();
+
+    final field = tester.getRect(find.byType(TextField));
+    final list = tester.getRect(find.byType(ListTile).first);
+    expect(list.left, moreOrLessEquals(field.left, epsilon: 1));
+    expect(list.width, moreOrLessEquals(field.width, epsilon: 1));
+    expect(list.top, greaterThanOrEqualTo(field.bottom));
   });
 }
